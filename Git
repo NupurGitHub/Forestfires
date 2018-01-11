@@ -1,0 +1,189 @@
+________________________________________
+#Step0: Using R to calculate a number based on the initial.
+ which(letters=="n")
+## [1] 14
+ which(letters=="a")
+## [1] 1
+ #so the number is 141 which is equal to (14*10)+1
+ 
+ #Step1:Dataset name: Forestfires
+ d1<- read.table("forestfires.csv",sep=",",header=TRUE)
+attach(d1)
+#taking log of response var area as  'log(area+1)' transformation due to the heavy skew and many zeroes (fires that burnt less than a hectare).  
+Area<-d1$area
+Area<-log(area+1)
+mydata<-data.frame(d1,Area)[,-13]
+
+#Step 2: Graphical EDA
+#Boxplots,scatterplots and histogram
+
+boxplot(wind,X,Y,col="orange",border="brown",data=d1,names=c("wind","X","Y"))
+hist(Area,col="red")
+par(mfrow=c(1,2))
+plot(temp,Area)
+plot(RH,Area,xlab="Relative humidity")
+#Bargraphs for categorical variables
+par(mfrow=c(1,2))
+T1<-table(month)#creating a table of months
+T1
+barplot(T1,col="blue",border="red")# the months of Aug and Sep show largest number of fires
+T2<-table(day) #creating a table of days
+T2
+barplot(T2,col="green",border="red")# the frequency of forestfires on weekends is the highest.
+# Numerical EDA
+#making a matrix or dataframe of numeric variables of the dataset
+my_data <- mydata[, c(1,2,5,6,7,8,9,10,11,12)]
+# correlations coefficients between the possible pairs of variables
+res <- cor(my_data)
+round(res, 2)
+
+#Step 3 : The statistical method I used here is 'Multiple linear regression'using least square approach.I did transfomration of response variable 'area' as 'log(area+1) since the model fit is better after the transformation.
+# So since least square approach is used the tuning parameter value is "0" in this case.
+
+Fit1<-lm(Area~.,data=mydata)
+#the summary of the linear model formed has DMC and monthdec as two significant variables, but the value of adjusted r-sq was very low, so variable selection should be done, besides considering other sttistical learning methods like Ridge Regression and Lasso.
+
+# Method of subset selection for variable selection
+library(leaps)
+M1=regsubsets(Area~.,data=mydata,nvmax =12)
+M1summary<-summary(M1)
+which.max (M1summary$adjr2)#10 variable model
+## [1] 10
+which.min (M1summary$cp )#5 variable model
+## [1] 5
+which.min (M1summary$bic )#1 variable model
+## [1] 1
+step(lm(Area~.,data=mydata),direction="both")#forward and backward stepwise selection pick 6 variable model("X","month","DMC","DC","Wind","temp")
+#Here we need to apply some statistical methods which first train on the training dataset and then with the help of best tuning parameter predict the response Area for the validation data as well as its prediction accuracy.This include subset selection method and regularization methods like ridge regression and Lasso.
+#Setting seed, forming training and validation sets 
+set.seed (141)
+train1=sample (c(TRUE ,FALSE), nrow(mydata),rep=TRUE)
+ test1 =(! train1 )
+
+#apply regsubsets() to the training set in order to perform best subset selection.
+library(leaps)
+regfit.best=regsubsets(Area~.,data=mydata[train1 ,], nvmax =12)
+#computing the validation set error for the best model of each model size.
+test.mat=model.matrix (Area~.,data=mydata [test1 ,])
+#run a loop
+val.errors =rep(NA ,12)
+ for(i in 1:12){
+   coefi=coef(regfit.best,id=i)
+   pred=test.mat[,names(coefi)]%*% coefi
+   val.errors[i]=mean(( mydata$Area[test1]-pred)^2)
+}
+val.errors#best model is the one that contains two variable.
+##  [1] 1.930706 1.878855 1.959689 1.958912 1.955176 1.999365 2.073011
+##  [8] 2.073555 1.969580 1.990716 2.042386 2.126126
+which.min (val.errors )
+## [1] 2
+coef(regfit.best ,2)#coefficients of 2 variable model
+#Finally, we perform best subset selection on the full data set, and select the best two-variable model.
+regfit.best=regsubsets(Area~.,data=mydata ,nvmax =12)
+ coef(regfit.best ,2)
+## (Intercept)    monthdec        temp 
+##  0.57120277  1.87906042  0.02684671
+# Thus we got monthdec and temp as the two significant variable model by this method.
+ 
+ #Ridge regression on training data
+x=model.matrix (Area~.,mydata )[,-1]#prduces matrix of 12 predictors
+y<-mydata$Area
+set.seed (141)
+train=sample (1: nrow(x), nrow(x)/2)
+test=(- train )
+y.test=y[test]
+library(glmnet)
+grid <- 10 ^ seq(4, -2, length = 100)#selecting values for lambda 
+ridge.mod =glmnet (x[train ,],y[train],alpha =0, lambda =grid ,thresh=1e-12)
+#cv.glmnet() func performs ten fold cross validation
+cv.out =cv.glmnet (x[train ,],y[train],alpha=0,lambda=grid)
+
+ bestlam =cv.out$lambda.min
+ bestlam
+#the value of (tuning parameter) that results in the smallest crossvalidation error is 10000
+## Lasso
+lasso.mod=glmnet (x[train,],y[train],alpha=1, lambda=grid)
+set.seed (141)
+cv.out =cv.glmnet (x[train ,],y[train],alpha =1)
+bestlam =cv.out$lambda.min
+bestlam# bestlambda or tuning prameter value implying bias-variance trade off  is 0.1741 for Lasso method.
+
+#Step4 Evaluating model performance on the validation set, first ridge regrsn
+ridge.pred=predict(ridge.mod ,s=bestlam ,newx=x[test ,])
+mean(( ridge.pred -y.test)^2)# the test MSE is 2.28
+# refitting the ridge regression model on the full data set using the value of lambda chosen by cross-validation, and examine the coefficient estimates.
+out=glmnet (x,y,alpha =0)
+predict (out,type="coefficients",s=bestlam )[1:28,] #none of the coefficients are zero-ridge regression does not perform variable selection.
+#Then Lasso, evaluation on test data
+lasso.pred=predict (lasso.mod ,s=bestlam ,newx=x[test,])
+mean(( lasso.pred -y.test)^2) # the test MSE is 1.73 which is lower than that of ridge regression but slightly higher than that of least squares.So the best two variable model seems to be the appropriate one.
+
+## Step 5
+## We first use classification trees to analyze the Forestfires data set. In these data, area is a continuous variable, and so we begin by recoding it as a binary variable. We use the ifelse() function to create a variable
+ Fire=ifelse (area <=5," small"," large ")
+ #Finally, we use the data.frame() function to merge Fire with the rest of the  data.
+ d1 =data.frame(d1 ,Fire)
+ library(tree)
+tree.d1 =tree(Fire~.-area ,d1 )
+ summary (tree.d1 )
+plot(tree.d1 )
+text(tree.d1 ,pretty =0)
+# to display the tree structure
+#The most important indicator of burned forest area appears to be monthdec since the first branch differentiates into small and large fires in dec.
+
+library(caTools)# for splitting data
+ set.seed(141)
+ ind<-sample.split(Y=d1$Fire,SplitRatio=0.7)
+ train<-d1[ind,]
+ test<-d1[!ind,]
+ library(rpart)# for decision trees
+#Fitting the training set
+dt<-rpart(Fire~.-area,data=train,method="class")
+ #Prediction accuracy for test set
+pred<-predict(dt,test,type="class")
+tab<-table(predictions=pred,actual=test$Fire)
+tab #table of confusion matrix
+sum(diag(tab))/sum(tab)# the prediction accuracy of decision tree 
+## Random forest
+##Fitting the training model
+library(randomForest)
+rf<-randomForest(Fire~.-area,data=train,mtry=3,ntree=20)
+rf #summary of random forest output
+# prediction for test set
+P<-predict(rf,test,type="class")
+t<-table(predictions=P,actual=test$Fire)
+t table of confusion matrix
+sum(diag(tab))/sum(tab)# same prediction accuracy as of decision tree.
+## Boosting
+library(gbm)
+set.seed(141) # setting seed to get random results
+
+bt<-gbm(Fire ~.-area,train, distribution="gaussian",n.trees =5000 , interaction.depth =2)
+summary(bt)# we see that month and temp are the most important variables.
+par(mfrow =c(1,2))
+plot(bt,i="month")
+plot(bt,i="temp")#These plots illustrate the marginal effect of the selected variables on the response after integrating out the other variables.
+#We now use the boosted model to predict Fires on the test set
+PR<-predict(bt,test,n.trees=5000)
+ta<-table(predictions=PR,actual=test$Fire)
+
+sum(diag(ta))/sum(ta)
+# Principal component analysis
+data<-d1[,-c(3,4,13,14)] #excluding the categorical predictors and the response variable.
+
+apply(data , 2, mean)# we can see the mean values of vriables like temp wind, relative humidity which gives us the indication of forestfires.
+pr.out=prcomp(data,scale =TRUE) # scale=TRUE will normalize the variables
+par(mfrow=c(1,1))
+biplot (pr.out,scale =0) # plot of PCA
+pr.var =pr.out$sdev ^2
+pve=pr.var/sum(pr.var )
+pve#We see that the first principal component explains 28.0% of the variance in the data, the next principal component explains 15% of the variance,and so forth. We can plot the PVE explained by each component, as well as the cumulative PVE, as follows
+##  [1] 0.28596963 0.15593806 0.12961244 0.12124636 0.09315200 0.06926170
+##  [7] 0.04755913 0.04630938 0.02946948 0.02148181
+par(mfrow=c(2,1))
+plot(pve,xlab=" Principal Component", ylab="Proportion of
+Variance Explained ",ylim=c(0,1),type='b')
+plot(cumsum (pve ),xlab="Principal Component",ylab ="
+Cumulative Proportion of Variance Explained",ylim=c(0,1),type='b')
+
+
